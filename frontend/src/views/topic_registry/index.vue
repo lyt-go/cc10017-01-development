@@ -8,6 +8,7 @@
       <div class="page-actions">
         <button class="btn primary" data-testid="open-create" type="button" @click="openCreate">登记数据主题</button>
         <button class="btn" data-testid="export" type="button" @click="exportRows">导出主题注册清单</button>
+        <RouterLink class="btn" data-testid="open-readiness-board" to="/topic_readiness">查看上线就绪数据包</RouterLink>
       </div>
     </header>
 
@@ -18,7 +19,7 @@
       </article>
     </div>
 
-    <form class="filter-bar" @submit.prevent="reload">
+    <form class="filter-bar" @submit.prevent="reload()">
       <label v-for="field in filterFields" :key="field" class="filter-item">
         <span>{{ field }}</span>
         <input v-model="filters[field]" :data-testid="`filter-${field}`" :placeholder="`按${field}检索`" />
@@ -48,6 +49,23 @@
             >
               {{ action }}
             </button>
+            <button
+              class="link"
+              type="button"
+              :data-testid="`readiness-${row.id}`"
+              @click="runReadinessCheck('首次上线', row)"
+            >
+              上线检查
+            </button>
+            <button
+              class="link"
+              type="button"
+              :data-testid="`readiness-backfill-${row.id}`"
+              @click="runReadinessCheck('补报', row)"
+            >
+              补报检查
+            </button>
+            <RouterLink class="link" :to="`/topic_readiness?topic=${row['主题编号']}`">就绪包</RouterLink>
           </td>
         </tr>
         <tr v-if="!rows.length">
@@ -72,9 +90,26 @@
       </form>
     </div>
 
+    <section v-if="readiness" class="scenario-card" data-testid="readiness-panel">
+      <div class="scenario-head">
+        <span class="scenario-name">上线就绪数据包 · {{ readiness.package_no }}</span>
+        <span class="badge" :class="readiness.consumable ? 'ready' : 'interrupted'">{{ readiness.status }}</span>
+      </div>
+      <dl class="detail-grid">
+        <div><dt>主题</dt><dd>{{ readiness.topic_code }}</dd></div>
+        <div><dt>主题版本</dt><dd>{{ readiness.topic_version }}</dd></div>
+        <div><dt>接收端版本</dt><dd>{{ readiness.receiver_version }}</dd></div>
+        <div><dt>消费组</dt><dd>{{ readiness.consumer_group || '—' }}（{{ readiness.consumer_status || '—' }}）</dd></div>
+        <div><dt>发布边界</dt><dd>{{ readiness.release_boundary }}</dd></div>
+        <div><dt>就绪概览</dt><dd>{{ readiness.overview }}</dd></div>
+      </dl>
+      <RouterLink class="link" :to="`/topic_readiness?topic=${readiness.topic_code}`">去就绪包视图核对逐项版本</RouterLink>
+    </section>
+
     <footer class="page-foot">
       <span>共 {{ total }} 条主题注册记录</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
+      <span v-else-if="notice" data-testid="readiness-notice">{{ notice }}</span>
     </footer>
   </section>
 </template>
@@ -85,6 +120,19 @@ import { computed, onMounted, ref } from 'vue'
 import { request } from '@/api/client'
 
 type Row = Record<string, string | number | null>
+type ReadinessPackage = {
+  id: number
+  package_no: string
+  topic_code: string
+  topic_version: string
+  receiver_version: string
+  consumer_group: string | null
+  consumer_status: string | null
+  release_boundary: string
+  overview: string
+  status: string
+  consumable: boolean
+}
 
 const ENDPOINT = '/api/topic_registry'
 const columns = ["主题编号", "主题名称", "消息格式", "序列化协议", "分区键列", "保留时长", "压缩类型", "Schema版本"]
@@ -100,6 +148,9 @@ const filterFields = columns.slice(0, 3)
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
+const readiness = ref<ReadinessPackage | null>(null)
+const notice = ref('')
+
 const stats = computed(() => [
   { label: metricNames[0], value: total.value },
   { label: metricNames[1], value: rows.value.filter((row) => row.status === statuses[1]).length },
@@ -168,7 +219,45 @@ async function runAction(action: string, row: Row) {
   }
 }
 
-async function reload() {
+async function runReadinessCheck(source: string, row: Row) {
+  errorMessage.value = ''
+  notice.value = ''
+  try {
+    const response = await request('/api/topic_readiness/check', {
+      method: 'POST',
+      body: JSON.stringify({ topic_code: row['主题编号'], source }),
+    })
+    const payload = await response.json()
+    if (!response.ok || !payload.ok) throw new Error(payload.message || '上线检查未通过')
+    readiness.value = payload.entry ?? null
+    notice.value = payload.message
+    await reload(row['主题编号'])
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '上线检查失败'
+  }
+}
+
+async function loadReadiness(topicCode: string | number | null) {
+  readiness.value = null
+  if (!topicCode) return
+  try {
+    // 先用列表接口确认该主题已有就绪包，避免对尚未检查的主题打 404 明细请求。
+    const listResponse = await request(
+      `/api/topic_readiness?keyword=${encodeURIComponent(String(topicCode))}&size=50`,
+    )
+    if (!listResponse.ok) return
+    const payload = await listResponse.json()
+    const hit = (payload.items ?? []).find((item: ReadinessPackage) => item.topic_code === topicCode)
+    if (!hit) return
+    const response = await request(`/api/topic_readiness/${hit.id}`)
+    if (!response.ok) return
+    readiness.value = await response.json()
+  } catch {
+    readiness.value = null
+  }
+}
+
+async function reload(focusTopic?: string | number | null) {
   errorMessage.value = ''
   const query = new URLSearchParams(filters.value as Record<string, string>).toString()
   try {
@@ -179,6 +268,7 @@ async function reload() {
     const payload = await response.json()
     rows.value = payload.items ?? []
     total.value = payload.total ?? rows.value.length
+    await loadReadiness(focusTopic ?? rows.value[0]?.['主题编号'] ?? null)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '主题注册列表读取失败'
   }

@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/kafka_connector", tags=["消息接入"])
 
 service = KafkaConnectorService()
 
-LIST_FIELDS = ["配置编号", "集群地址", "消费组名", "偏移策略", "反序列化器", "批量大小", "超时时间", "死信队列"]
+LIST_FIELDS = ["配置编号", "集群地址", "消费组名", "偏移策略", "反序列化器", "批量大小", "超时时间", "死信队列", "接收端版本"]
 STATUSES = ["草稿", "待校验", "已生效", "已停用"]
 
 

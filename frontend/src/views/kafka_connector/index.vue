@@ -8,6 +8,7 @@
       <div class="page-actions">
         <button class="btn primary" data-testid="open-create" type="button" @click="openCreate">登记接入配置</button>
         <button class="btn" data-testid="export" type="button" @click="exportRows">导出消息接入清单</button>
+        <RouterLink class="btn" data-testid="open-readiness-board" to="/topic_readiness">查看上线就绪数据包</RouterLink>
       </div>
     </header>
 
@@ -18,7 +19,7 @@
       </article>
     </div>
 
-    <form class="filter-bar" @submit.prevent="reload">
+    <form class="filter-bar" @submit.prevent="reload()">
       <label v-for="field in filterFields" :key="field" class="filter-item">
         <span>{{ field }}</span>
         <input v-model="filters[field]" :data-testid="`filter-${field}`" :placeholder="`按${field}检索`" />
@@ -72,9 +73,39 @@
       </form>
     </div>
 
+    <section v-if="readiness" class="scenario-card" data-testid="readiness-panel">
+      <div class="scenario-head">
+        <span class="scenario-name">同一版本的就绪结果 · {{ readiness.package_no }}</span>
+        <span class="badge" :class="readiness.consumable ? 'ready' : 'interrupted'">{{ readiness.status }}</span>
+      </div>
+      <dl class="detail-grid">
+        <div><dt>主题</dt><dd>{{ readiness.topic_code }} / {{ readiness.topic_name }}</dd></div>
+        <div><dt>主题版本</dt><dd data-testid="readiness-topic-version">{{ readiness.topic_version }}</dd></div>
+        <div><dt>接收端版本</dt><dd data-testid="readiness-receiver-version">{{ readiness.receiver_version }}</dd></div>
+        <div><dt>消费组</dt><dd>{{ readiness.consumer_group || '—' }}（{{ readiness.consumer_status || '—' }}）</dd></div>
+        <div><dt>发布边界</dt><dd>{{ readiness.release_boundary }}</dd></div>
+        <div><dt>就绪概览</dt><dd>{{ readiness.overview }}</dd></div>
+      </dl>
+      <table class="data-table">
+        <thead><tr><th>检查项</th><th>主题版本</th><th>接收端版本</th><th>结论</th></tr></thead>
+        <tbody>
+          <tr v-for="item in readiness.trace" :key="String(item.item)">
+            <td>{{ item.item }}</td>
+            <td>{{ item.topic_version || '—' }}</td>
+            <td>{{ item.receiver_version || '—' }}</td>
+            <td>{{ item.status }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="page-foot">
+        <RouterLink class="link" :to="`/topic_readiness?topic=${readiness.topic_code}`">去上线就绪数据包视图核对</RouterLink>
+      </p>
+    </section>
+
     <footer class="page-foot">
       <span>共 {{ total }} 条消息接入记录</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
+      <span v-else-if="notice" data-testid="readiness-notice">{{ notice }}</span>
     </footer>
   </section>
 </template>
@@ -85,6 +116,28 @@ import { computed, onMounted, ref } from 'vue'
 import { request } from '@/api/client'
 
 type Row = Record<string, string | number | null>
+type ReadinessTrace = {
+  item: string
+  topic_version: string | null
+  receiver_version: string | null
+  status: string
+}
+type ReadinessPackage = {
+  id: number
+  package_no: string
+  connector_code: string | null
+  topic_code: string
+  topic_name: string
+  topic_version: string
+  receiver_version: string
+  consumer_group: string | null
+  consumer_status: string | null
+  release_boundary: string
+  overview: string
+  status: string
+  consumable: boolean
+  trace: ReadinessTrace[]
+}
 
 const ENDPOINT = '/api/kafka_connector'
 const columns = ["配置编号", "集群地址", "消费组名", "偏移策略", "反序列化器", "批量大小", "超时时间", "死信队列"]
@@ -100,6 +153,9 @@ const filterFields = columns.slice(0, 3)
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
+const readiness = ref<ReadinessPackage | null>(null)
+const notice = ref('')
+
 const stats = computed(() => [
   { label: metricNames[0], value: total.value },
   { label: metricNames[1], value: rows.value.filter((row) => row.status === statuses[1]).length },
@@ -154,6 +210,7 @@ async function submitCreate() {
 
 async function runAction(action: string, row: Row) {
   errorMessage.value = ''
+  notice.value = ''
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
@@ -162,13 +219,39 @@ async function runAction(action: string, row: Row) {
     if (!response.ok) {
       throw new Error('消息接入动作未生效，请稍后重试')
     }
-    await reload()
+    const payload = await response.json()
+    const packageNo = payload.entry?._readiness_package_no
+    notice.value = packageNo ? `检查结果已写入就绪包 ${packageNo}` : ''
+    await reload(row)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '消息接入操作失败'
   }
 }
 
-async function reload() {
+async function loadReadiness(row: Row | null) {
+  readiness.value = null
+  const connectorCode = row?.['配置编号']
+  if (!connectorCode) return
+  try {
+    // 先用列表接口确认该接入配置已有就绪包，再读同一版本的明细，避免 404。
+    const listResponse = await request(
+      `/api/topic_readiness?keyword=${encodeURIComponent(String(connectorCode))}&size=50`,
+    )
+    if (!listResponse.ok) return
+    const payload = await listResponse.json()
+    const hit = (payload.items ?? []).find(
+      (item: ReadinessPackage) => item.connector_code === connectorCode,
+    )
+    if (!hit) return
+    const response = await request(`/api/topic_readiness/${hit.id}`)
+    if (!response.ok) return
+    readiness.value = await response.json()
+  } catch {
+    readiness.value = null
+  }
+}
+
+async function reload(focusRow?: Row) {
   errorMessage.value = ''
   const query = new URLSearchParams(filters.value as Record<string, string>).toString()
   try {
@@ -179,6 +262,7 @@ async function reload() {
     const payload = await response.json()
     rows.value = payload.items ?? []
     total.value = payload.total ?? rows.value.length
+    await loadReadiness(focusRow ?? rows.value[0] ?? null)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '消息接入列表读取失败'
   }

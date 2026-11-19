@@ -42,16 +42,35 @@ class PipelineEngine:
         schema = self._find_by_field("schema_evolve", "关联主题", topic_code) if topic else None
         flink = self._find_by_field("flink_job", "消费主题", topic_code) if topic else None
 
+        # 就绪包是消息接入与主题注册的交接对象：链路上游以它为准，再往下看 Schema 与 Flink。
+        readiness = [r for r in store.rows("topic_readiness")
+                     if r.get("topic_code") == topic_code]
+        consumable = [r for r in readiness if r.get("consumable")]
+        # 下游实际消费的是可消费的那一份；没有可消费包时展示最近一次检查结果。
+        current_readiness = (
+            max(consumable, key=lambda r: int(r.get("id", 0))) if consumable
+            else (max(readiness, key=lambda r: int(r.get("id", 0))) if readiness else None)
+        )
+
         return {
             "topic": {"exists": topic is not None, "status": topic.get("status") if topic else None, "entry": topic},
             "kafka_connector": {"exists": kafka is not None, "status": kafka.get("status") if kafka else None, "entry": kafka},
             "schema_evolve": {"exists": schema is not None, "status": schema.get("status") if schema else None, "entry": schema},
             "flink_job": {"exists": flink is not None, "status": flink.get("status") if flink else None, "entry": flink},
+            "readiness_package": {
+                "exists": current_readiness is not None,
+                "status": current_readiness.get("status") if current_readiness else None,
+                "package_no": current_readiness.get("package_no") if current_readiness else None,
+                "topic_version": current_readiness.get("topic_version") if current_readiness else None,
+                "receiver_version": current_readiness.get("receiver_version") if current_readiness else None,
+                "consumable": bool(consumable),
+            },
             "chain_ready": all([
                 topic is not None and topic.get("status") == "已上线",
                 kafka is not None and kafka.get("status") == "已生效",
                 schema is not None and schema.get("status") == "已生效",
                 flink is not None and flink.get("status") == "运行中",
+                bool(consumable),
             ]),
         }
 
@@ -586,6 +605,8 @@ class PipelineEngine:
             "compact_results": len(store.rows("compact_results")),
             "ttl_applied_log": len(store.rows("ttl_applied_log")),
             "realtime_metric_results": len(store.rows("realtime_metric_results")),
+            "topic_readiness": len(store.rows("topic_readiness")),
+            "consumer_readiness_records": len(store.rows("consumer_readiness_records")),
         }
 
         return {

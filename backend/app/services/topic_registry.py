@@ -75,18 +75,27 @@ class TopicRegistryService:
         if target_idx < current_idx and action != "标记下线":
             return None, f"状态不能从「{entry['status']}」回退到「{target}」"
 
+        # 上线闸门：消费组未就绪时不允许主题先可见，否则下游会启动空消费链路。
+        # 就绪包在同一发布边界里同时保存主题版本与接收端版本，先检查、后改状态。
+        if action == "确认上线":
+            from app.services.topic_readiness import topic_readiness_service
+
+            allowed, message, _ = topic_readiness_service.guard_online(entry)
+            if not allowed:
+                return None, f"数据主题暂不能上线：{message}"
+
         entry["status"] = target
         entry["pending"] = target != STATUS_ORDER[-1]
         entry["abnormal"] = action in NEGATIVE_ACTIONS
 
-        # 上线时触发下游校验
+        # 上线时触发下游校验并激活上线就绪数据包
         if action == "确认上线":
             self._on_topic_online(entry)
 
         return entry, f"数据主题已{action}"
 
     def _on_topic_online(self, entry: dict[str, Any]) -> None:
-        """主题上线时：检查关联的Kafka连接器和Schema规则是否存在。"""
+        """主题上线时：检查关联的Kafka连接器和Schema规则，并激活就绪包。"""
         topic_code = entry.get("主题编号")
         # 检查kafka_connector
         kafka_ok = any(
@@ -101,6 +110,14 @@ class TopicRegistryService:
         entry["_downstream_ready"] = kafka_ok and schema_ok
         entry["_kafka_ready"] = kafka_ok
         entry["_schema_ready"] = schema_ok
+
+        # 主题配置与接收端版本同批写入就绪包：主题确认上线时只激活已就绪的包。
+        from app.services.topic_readiness import topic_readiness_service
+
+        package = topic_readiness_service.activate_for_topic(entry)
+        if package is not None:
+            entry["_readiness_package_no"] = package.get("package_no")
+            entry["_readiness_package_status"] = package.get("status")
 
     def get_downstream_status(self, entry_id: int) -> dict[str, Any] | None:
         """查询主题的下游链路状态。"""

@@ -25,5 +25,6 @@ from app.routers import sink_dispatch as router_sink_dispatch
 from app.routers import ttl_policy as router_ttl_policy
 from app.routers import realtime_metrics as router_realtime_metrics
 from app.routers import pipeline as router_pipeline
+from app.routers import topic_readiness as router_topic_readiness
 
-ROUTERS = [router_topic_registry, router_flink_job, router_kafka_connector, router_schema_evolve, router_upsert_merge, router_lake_partition, router_stream_quality, router_iceberg_table, router_watermark_track, router_dead_letter, router_materialized_view, router_change_capture, router_compact_policy, router_stream_lineage, router_backfill_stream, router_sink_dispatch, router_ttl_policy, router_realtime_metrics, router_pipeline]
+ROUTERS = [router_topic_registry, router_flink_job, router_kafka_connector, router_schema_evolve, router_upsert_merge, router_lake_partition, router_stream_quality, router_iceberg_table, router_watermark_track, router_dead_letter, router_materialized_view, router_change_capture, router_compact_policy, router_stream_lineage, router_backfill_stream, router_sink_dispatch, router_ttl_policy, router_realtime_metrics, router_pipeline, router_topic_readiness]

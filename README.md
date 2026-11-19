@@ -67,11 +67,16 @@ npm run dev
 | 下沉分发 | `sink_dispatch` | 分发规则 | 规则编号、湖表名、目标系统 |
 | 数据生命周期 | `ttl_policy` | 生命周期 | 策略编号、目标表名、热数据保留 |
 | 实时指标 | `realtime_metrics` | 指标定义 | 指标编号、指标名称、聚合窗口 |
+| 主题上线就绪 | `topic_readiness` | 就绪数据包 | 就绪包编号、业务场景、来源、主题版本、接收端版本 |
 
 ## 约定
 
 - 每个模块的前端页面在 `frontend/src/views/<模块>/index.vue`，后端接口在
   `backend/app/routers/<模块>.py`，业务规则在 `backend/app/services/<模块>.py`。
+- 「主题上线就绪数据包」是主题注册与消息接入的交接对象：主题注册页发起上线检查，
+  消息接入页查看同一版本的就绪结果，`/topic_readiness` 视图按业务场景并列展示来源、
+  主题版本与接收端版本。主题确认上线前必须先有可消费的就绪包，避免消费组仍在草稿时
+  主题先可见。
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 

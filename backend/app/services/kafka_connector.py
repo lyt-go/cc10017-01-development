@@ -6,7 +6,7 @@ from typing import Any
 from app.store import store
 
 MODULE = "kafka_connector"
-LIST_FIELDS = ["配置编号", "集群地址", "消费组名", "偏移策略", "反序列化器", "批量大小", "超时时间", "死信队列"]
+LIST_FIELDS = ["配置编号", "集群地址", "消费组名", "偏移策略", "反序列化器", "批量大小", "超时时间", "死信队列", "接收端版本"]
 REQUIRED_FIELDS = ["配置编号", "集群地址", "消费组名"]
 STATUS_ORDER = ["草稿", "待校验", "已生效", "已停用"]
 ACTION_RULES = {"提交校验": "待校验", "标记生效": "已生效", "停用配置": "已停用"}
@@ -62,4 +62,11 @@ class KafkaConnectorService:
         entry["status"] = target
         entry["pending"] = target != STATUS_ORDER[-1]
         entry["abnormal"] = action in NEGATIVE_ACTIONS
+        # 消息接入把检查结果写入主题上线就绪数据包，并据此建立消费组就绪记录。
+        if action == "标记生效":
+            from app.services.topic_readiness import topic_readiness_service
+
+            package = topic_readiness_service.on_receiver_ready(entry)
+            if package is not None:
+                entry["_readiness_package_no"] = package.get("package_no")
         return entry, f"接入配置已{action}"
